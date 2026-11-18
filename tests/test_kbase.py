@@ -174,7 +174,11 @@ def test_model_failure_does_not_leave_partial_index(tmp_path):
 
 
 def test_web_workspace_and_model_status(client):
-    assert "KBase".encode() in client.get("/").content
+    workspace = client.get("/").text
+    assert "KBase" in workspace
+    assert 'id="model-status"' not in workspace
+    assert 'id="model-detail"' not in workspace
+    assert 'id="cloud-note"' in workspace
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/api/models").json()["embedding"]["ready"] is True
 

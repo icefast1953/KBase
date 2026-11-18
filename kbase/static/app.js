@@ -296,26 +296,12 @@ async function importFiles(files) {
   }
 }
 
-async function checkModels() {
-  const output = get("model-status");
-  const detail = get("model-detail");
-  const dot = get("model-dot");
+async function updateCloudNotice() {
   try {
     const models = await api("/models");
-    const ready = models.chat.ready;
-    const cloud = models.chat.provider === "deepseek";
-    get("cloud-note").hidden = !cloud;
-    dot.classList.toggle("ready", ready);
-    output.textContent = ready ? (cloud ? "DeepSeek 已配置" : "本地模型就绪")
-      : models.connected ? "模型待配置" : "Ollama 未连接";
-    detail.textContent = [
-      `向量 · ${models.embedding.name}${models.embedding.ready ? "" : "（未就绪）"}`,
-      `问答 · ${models.chat.name}${models.chat.ready ? "" : "（未就绪）"}`,
-    ].join("\n");
-    detail.style.whiteSpace = "pre-line";
+    get("cloud-note").hidden = models.chat.provider !== "deepseek";
   } catch {
-    dot.classList.remove("ready");
-    output.textContent = "无法获取模型状态";
+    get("cloud-note").hidden = false;
   }
 }
 
@@ -332,7 +318,6 @@ librarySelect.addEventListener("change", () => {
   notice(get("side-notice"));
   loadDocuments().catch(reportDocumentError);
 });
-get("check-models").addEventListener("click", checkModels);
 get("new-chat").addEventListener("click", () => {
   resetConversation();
   questionInput.focus();
@@ -393,4 +378,4 @@ get("library-form").addEventListener("submit", async event => {
 });
 
 loadLibraries().then(loadDocuments).catch(reportDocumentError);
-checkModels();
+updateCloudNotice();
