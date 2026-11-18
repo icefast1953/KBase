@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>KBase 知识库</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark" aria-hidden="true">K</span><span>KBase</span></div>
+      <nav aria-label="工作台">
+        <button type="button" class="nav active" data-view="query" aria-current="page">检索与问答</button>
+        <button type="button" class="nav" data-view="documents">文档管理 <span id="document-count" class="count">0</span></button>
+      </nav>
+      <div class="library-panel">
+        <label for="library">当前知识库</label>
+        <select id="library" aria-label="当前知识库"></select>
+        <button type="button" id="new-library" class="add-library">＋ 新建知识库</button>
+      </div>
+      <div class="sidebar-footer">
+        <button id="check-models" class="model-button" type="button" title="刷新模型状态">
+          <span class="status-dot" id="model-dot"></span><span id="model-status">正在检查本地模型</span>
+        </button>
+        <p id="model-detail" class="model-detail"></p>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <span id="current-library">知识库</span>
+        <span class="topbar-separator" aria-hidden="true">/</span>
+        <span id="current-view">检索与问答</span>
+      </header>
+
+      <section id="query-view" class="page">
+        <header class="page-intro">
+          <h1>检索与问答</h1>
+          <p>搜索库内文档，或提出问题，沿着引用回到原文。</p>
+        </header>
+        <form id="query-form" class="composer">
+          <label for="question">搜索词或问题</label>
+          <textarea id="question" maxlength="500" rows="3" required placeholder="例如：报销凭证最晚什么时候提交？"></textarea>
+          <div class="composer-actions">
+            <select id="mode" aria-label="检索方式">
+              <option value="hybrid">混合检索</option>
+              <option value="keyword">关键词检索</option>
+              <option value="semantic">语义检索</option>
+            </select>
+            <div class="button-group">
+              <button class="button secondary" value="search" type="submit">仅检索</button>
+              <button class="button primary" value="answer" type="submit">生成回答</button>
+            </div>
+          </div>
+          <p id="cloud-note" class="hint cloud-note" hidden>使用 DeepSeek 生成回答会发送本次问题与命中的文档片段。</p>
+        </form>
+        <p id="query-status" class="notice" role="status" hidden></p>
+        <div id="results" class="results" hidden>
+          <article id="answer-panel" class="panel" hidden>
+            <h2>知识库回答</h2>
+            <div id="answer-text" class="answer-text"></div>
+          </article>
+          <section class="panel sources-panel">
+            <h2 id="sources-title">文档出处</h2>
+            <div id="sources" class="sources"></div>
+          </section>
+        </div>
+        <section class="empty-state" id="welcome">
+          <div class="empty-icon" aria-hidden="true">↗</div>
+          <p id="welcome-text">导入第一份文档，即可开始检索。</p>
+          <button class="button secondary" type="button" data-view="documents">前往文档管理</button>
+        </section>
+      </section>
+
+      <section id="documents-view" class="page" hidden>
+        <header class="page-intro">
+          <h1>文档管理</h1>
+          <p>上传资料后，KBase 会提取文本并建立关键词与语义索引。</p>
+        </header>
+        <section id="drop-zone" class="drop-zone">
+          <div class="empty-icon upload-icon" aria-hidden="true">↑</div>
+          <h2>导入文档</h2>
+          <p>拖放到这里，或选择一个或多个文件。</p>
+          <button id="choose-files" class="button primary" type="button">选择文件</button>
+          <input id="file-input" type="file" accept=".docx,.xlsx,.xls,.pdf,.md,.markdown,.txt,.csv,.tsv" multiple hidden>
+          <span class="formats">Word · Excel · PDF · Markdown · TXT · CSV · TSV，单个文件最大 20 MB</span>
+        </section>
+        <ul id="upload-log" class="upload-log" aria-live="polite" hidden></ul>
+        <section class="panel documents-panel">
+          <div class="panel-title"><h2>库内文档</h2><span id="table-count"></span></div>
+          <p id="empty-documents" class="hint">当前知识库还没有文档。</p>
+          <div class="table-wrap" id="table-wrap" hidden>
+            <table>
+              <thead><tr><th scope="col">文档</th><th scope="col">片段数</th><th scope="col">导入时间</th><th scope="col">操作</th></tr></thead>
+              <tbody id="documents"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="library-dialog">
+    <form id="library-form">
+      <h2>新建知识库</h2>
+      <label for="library-name">知识库名称</label>
+      <input id="library-name" maxlength="60" placeholder="例如：设备维护资料" required>
+      <p id="library-error" class="notice error" role="status" hidden></p>
+      <div class="button-group">
+        <button class="button secondary" type="button" id="cancel-library">取消</button>
+        <button class="button primary" type="submit">创建</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>
