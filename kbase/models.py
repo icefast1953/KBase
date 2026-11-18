@@ -34,6 +34,13 @@ def unpack_vector(vector: bytes) -> tuple[float, ...]:
     return struct.unpack(f"<{len(vector) // 4}f", vector)
 
 
+def answer_text(message: dict) -> str:
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ModelError("问答模型未返回可用的文字，请重试。")
+    return content.strip()
+
+
 class Ollama:
     def __init__(self, transport: httpx.BaseTransport | None = None):
         self.embedding_model = os.getenv("KBASE_EMBED_MODEL", "bge-m3:latest")
@@ -98,18 +105,26 @@ class Ollama:
         return vectors
 
     def answer(self, messages: list[dict]) -> str:
-        response = self.request("/api/chat", {
+        return answer_text(self.complete(messages, grounded=True))
+
+    def complete(self, messages: list[dict], *, tools: list[dict] | None = None,
+                 grounded: bool = False) -> dict:
+        payload = {
             "model": self.chat_model, "messages": messages, "stream": False,
-            "format": ANSWER_FORMAT,
-            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600},
-        })
-        try:
-            text = response["message"]["content"].strip()
-            if not text:
-                raise ValueError
-            return text
-        except (KeyError, AttributeError, TypeError, ValueError) as error:
-            raise ModelError("问答模型未返回可用的文字，请重试。") from error
+            "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 600 if grounded else 1536},
+        }
+        if grounded:
+            payload["format"] = ANSWER_FORMAT
+        if tools:
+            payload["tools"] = tools
+        message = self.request("/api/chat", payload).get("message")
+        if not isinstance(message, dict):
+            raise ModelError("本地模型未返回可用的消息，请重试。")
+        return message
+
+    @staticmethod
+    def tool_reply(call: dict, content: str) -> dict:
+        return {"role": "tool", "tool_name": call["function"]["name"], "content": content}
 
 
 class DeepSeek:
@@ -129,19 +144,27 @@ class DeepSeek:
         return {"name": self.chat_model, "ready": self.configured, "provider": "deepseek"}
 
     def answer(self, messages: list[dict]) -> str:
+        return answer_text(self.complete(messages, grounded=True))
+
+    def complete(self, messages: list[dict], *, tools: list[dict] | None = None,
+                 grounded: bool = False) -> dict:
         if not self.configured:
             raise ModelError("请在本机配置 DEEPSEEK_API_KEY 后重新启动 KBase。")
+        payload = {
+            "model": self.chat_model, "messages": messages, "stream": False,
+            "thinking": {"type": "disabled"}, "temperature": 0, "max_tokens": 1000 if grounded else 2200,
+        }
+        if grounded:
+            payload["response_format"] = {"type": "json_object"}
+        if tools:
+            payload["tools"] = tools
         try:
-            response = self.client.post("/chat/completions", json={
-                "model": self.chat_model, "messages": messages, "stream": False,
-                "thinking": {"type": "disabled"}, "temperature": 0, "max_tokens": 1000,
-                "response_format": {"type": "json_object"},
-            })
+            response = self.client.post("/chat/completions", json=payload)
             response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            if not isinstance(content, str) or not content.strip():
+            message = response.json()["choices"][0]["message"]
+            if not isinstance(message, dict):
                 raise ValueError
-            return content
+            return message
         except httpx.HTTPStatusError as error:
             detail = {
                 401: "DeepSeek 鉴权失败，请检查本机的密钥配置。",
@@ -153,3 +176,7 @@ class DeepSeek:
             raise ModelError("暂时无法连接 DeepSeek，请检查网络后重试。") from error
         except (KeyError, IndexError, ValueError, TypeError) as error:
             raise ModelError("DeepSeek 未返回可用的回答，请重试。") from error
+
+    @staticmethod
+    def tool_reply(call: dict, content: str) -> dict:
+        return {"role": "tool", "tool_call_id": call["id"], "content": content}

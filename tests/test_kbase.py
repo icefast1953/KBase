@@ -209,3 +209,103 @@ def test_deepseek_chat_uses_selected_excerpts_and_checks_citations(tmp_path, mod
             assert result["answer"] == "由文档负责人授权。 [1]"
         else:
             assert result["answer"] is None and "引用" in result["notice"]
+
+
+def test_chat_carries_history_without_searching(client, model_transport, monkeypatch):
+    def respond(request):
+        assert request.url.path == "/api/chat"
+        body = json.loads(request.content)
+        assert "format" not in body
+        assert body["tools"][0]["function"]["name"] == "search_knowledge_base"
+        assert body["messages"][1:] == [
+            {"role": "user", "content": "我的猫叫奶糖。"},
+            {"role": "assistant", "content": "记住了。"},
+            {"role": "user", "content": "它叫什么？"},
+        ]
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "奶糖。"}})
+
+    monkeypatch.setattr(model_transport, "handler", respond)
+    library = client.get("/api/libraries").json()[0]["id"]
+    result = client.post("/api/chat", json={
+        "question": "它叫什么？", "library_id": library,
+        "history": [{"role": "user", "content": "我的猫叫奶糖。"},
+                    {"role": "assistant", "content": "记住了。"}],
+    })
+    assert result.status_code == 200, result.text
+    assert result.json()["answer"] == "奶糖。"
+    assert result.json()["sources"] == []
+    assert result.json()["searched"] is False
+
+
+@pytest.mark.parametrize("provider", ["ollama", "deepseek"])
+def test_chat_executes_library_tool_in_selected_library(tmp_path, model_transport, provider, monkeypatch):
+    from kbase.app import create_app
+    from kbase.models import DeepSeek, Ollama
+
+    embedding_response = model_transport.handler
+
+    def respond(request):
+        if request.url.path == "/api/embed":
+            return embedding_response(request)
+        is_cloud = provider == "deepseek"
+        assert request.url.path == ("/chat/completions" if is_cloud else "/api/chat")
+        body = json.loads(request.content)
+        messages = body["messages"]
+        assert "search_knowledge_base" in messages[0]["content"]
+        if messages[-1]["role"] == "user":
+            function = {"name": "search_knowledge_base", "arguments": {"query": "负责人授权"}}
+            call = {"function": function}
+            if is_cloud:
+                function["arguments"] = json.dumps(function["arguments"])
+                call.update(id="call_test", type="function")
+            message = {"role": "assistant", "content": "", "tool_calls": [call]}
+        else:
+            assert messages[-2]["role"] == "assistant" and messages[-2]["tool_calls"]
+            if is_cloud:
+                assert messages[-1]["tool_call_id"] == "call_test"
+            else:
+                assert messages[-1]["tool_name"] == "search_knowledge_base"
+            assert json.loads(messages[-1]["content"]) == {
+                "sources": [{"reference": 1, "text": "须经文档负责人授权。"}],
+            }
+            message = {"role": "assistant", "content": "需要文档负责人授权。 [1] [99]"}
+        envelope = {"choices": [{"message": message}]} if is_cloud else {"message": message}
+        return httpx.Response(200, json=envelope)
+
+    cloud = DeepSeek("test-placeholder", transport=httpx.MockTransport(respond)) if provider == "deepseek" else None
+    if cloud is None:
+        monkeypatch.setattr(model_transport, "handler", respond)
+    app = create_app(tmp_path / "conversation.db", Ollama(transport=model_transport), cloud)
+    with TestClient(app, base_url="http://localhost") as browser:
+        selected = browser.get("/api/libraries").json()[0]["id"]
+        private = browser.post("/api/libraries", json={"name": "另一知识库"}).json()["id"]
+        assert upload(browser, selected, "权限.txt", "须经文档负责人授权。".encode()).status_code == 201
+        assert upload(browser, private, "内部.txt", "另一知识库的负责人授权信息。".encode()).status_code == 201
+        response = browser.post("/api/chat", json={
+            "question": "按知识库的规定，权限要经过谁批准？",
+            "library_id": selected, "mode": "keyword",
+        })
+        assert response.status_code == 200, response.text
+        result = response.json()
+        assert result["searched"] is True
+        assert result["answer"] == "需要文档负责人授权。 [1]"
+        assert [source["filename"] for source in result["sources"]] == ["权限.txt"]
+
+
+def test_explicit_knowledge_question_cannot_skip_retrieval(client, model_transport, monkeypatch):
+    original = model_transport.handler
+
+    def respond(request):
+        if request.url.path == "/api/chat" and "format" not in json.loads(request.content):
+            return httpx.Response(200, json={"message": {"content": "凭运气就能拿到权限。"}})
+        return original(request)
+
+    monkeypatch.setattr(model_transport, "handler", respond)
+    library = client.get("/api/libraries").json()[0]["id"]
+    assert upload(client, library, "权限.txt", "须经文档负责人授权。".encode()).status_code == 201
+
+    result = client.post("/api/chat", json={
+        "question": "根据知识库，权限由谁发放？", "library_id": library,
+    }).json()
+    assert result["searched"] is True
+    assert result["answer"] == "由文档负责人授权。 [1]"

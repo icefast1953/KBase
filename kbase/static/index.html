@@ -5,22 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <title>KBase 知识库</title>
-  <link rel="stylesheet" href="/static/style.css">
-  <script src="/static/app.js" defer></script>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+  <script src="/static/app.js?v=2" defer></script>
 </head>
 <body>
   <div class="layout">
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark" aria-hidden="true">K</span><span>KBase</span></div>
       <nav aria-label="工作台">
-        <button type="button" class="nav active" data-view="query" aria-current="page">检索与问答</button>
+        <button type="button" class="nav active" data-view="query" aria-current="page">对话</button>
         <button type="button" class="nav" data-view="documents">文档管理 <span id="document-count" class="count">0</span></button>
       </nav>
       <div class="library-panel">
         <label for="library">当前知识库</label>
-        <select id="library" aria-label="当前知识库"></select>
+        <select id="library" aria-label="当前知识库" title="切换知识库会开始新对话"></select>
         <button type="button" id="new-library" class="add-library">＋ 新建知识库</button>
       </div>
+      <section class="side-documents" aria-label="知识库文件">
+        <div id="side-drop" class="drop-zone side-drop">
+          <button id="side-upload" class="side-upload" type="button">↑ 上传文件</button>
+          <span>拖放文件到这里，单个文件最大 20 MB</span>
+        </div>
+        <p id="side-notice" class="notice" role="status" hidden></p>
+        <ul id="side-files" class="side-files" aria-label="已导入文件"></ul>
+      </section>
       <div class="sidebar-footer">
         <button id="check-models" class="model-button" type="button" title="刷新模型状态">
           <span class="status-dot" id="model-dot"></span><span id="model-status">正在检查本地模型</span>
@@ -33,46 +41,42 @@
       <header class="topbar">
         <span id="current-library">知识库</span>
         <span class="topbar-separator" aria-hidden="true">/</span>
-        <span id="current-view">检索与问答</span>
+        <span id="current-view">对话</span>
+        <button class="button secondary new-chat" type="button" id="new-chat">＋ 新对话</button>
       </header>
 
-      <section id="query-view" class="page">
-        <header class="page-intro">
-          <h1>检索与问答</h1>
-          <p>搜索库内文档，或提出问题，沿着引用回到原文。</p>
-        </header>
-        <form id="query-form" class="composer">
-          <label for="question">搜索词或问题</label>
-          <textarea id="question" maxlength="500" rows="3" required placeholder="例如：报销凭证最晚什么时候提交？"></textarea>
-          <div class="composer-actions">
-            <select id="mode" aria-label="检索方式">
-              <option value="hybrid">混合检索</option>
-              <option value="keyword">关键词检索</option>
-              <option value="semantic">语义检索</option>
-            </select>
-            <div class="button-group">
-              <button class="button secondary" value="search" type="submit">仅检索</button>
-              <button class="button primary" value="answer" type="submit">生成回答</button>
-            </div>
+      <section id="query-view" class="page chat-page">
+        <header id="welcome" class="chat-welcome">
+          <h1>今天想聊些什么？</h1>
+          <p>直接提问，或让 KBase 查找你上传的资料。</p>
+          <div class="suggestions">
+            <button type="button" data-prompt="帮我把一个项目想法整理成清晰的提纲。">把项目想法整理成提纲 <span aria-hidden="true">↗</span></button>
+            <button type="button" data-prompt="根据当前知识库的资料，列出值得关注的关键结论。">从资料中找出关键结论 <span aria-hidden="true">↗</span></button>
           </div>
-          <p id="cloud-note" class="hint cloud-note" hidden>使用 DeepSeek 生成回答会发送本次问题与命中的文档片段。</p>
-        </form>
-        <p id="query-status" class="notice" role="status" hidden></p>
-        <div id="results" class="results" hidden>
-          <article id="answer-panel" class="panel" hidden>
-            <h2>知识库回答</h2>
-            <div id="answer-text" class="answer-text"></div>
-          </article>
-          <section class="panel sources-panel">
-            <h2 id="sources-title">文档出处</h2>
-            <div id="sources" class="sources"></div>
-          </section>
+        </header>
+        <section id="conversation" class="conversation" role="log" aria-label="对话消息"></section>
+        <div id="composer-dock" class="composer-dock">
+          <p id="query-status" class="notice" role="status" hidden></p>
+          <form id="query-form" class="composer">
+            <textarea id="question" aria-label="输入消息" maxlength="3000" rows="2" required placeholder="问 KBase，或让它查查知识库"></textarea>
+            <div class="composer-actions">
+              <label class="tool-switch"><input id="enable-knowledge" type="checkbox" checked> 知识库工具</label>
+              <div id="search-options" class="button-group search-options">
+                <select id="mode" aria-label="知识库检索方式">
+                  <option value="hybrid">混合检索</option>
+                  <option value="keyword">关键词检索</option>
+                  <option value="semantic">语义检索</option>
+                </select>
+                <button class="button secondary" value="search" type="submit">仅检索</button>
+              </div>
+              <button class="button primary send-button" value="answer" type="submit">发送 <span aria-hidden="true">↑</span></button>
+            </div>
+          </form>
+          <div class="composer-foot">
+            <span>Enter 发送 · Shift+Enter 换行</span>
+            <span id="cloud-note" hidden>DeepSeek 会收到近期对话及本次调用工具找到的文档片段。</span>
+          </div>
         </div>
-        <section class="empty-state" id="welcome">
-          <div class="empty-icon" aria-hidden="true">↗</div>
-          <p id="welcome-text">导入第一份文档，即可开始检索。</p>
-          <button class="button secondary" type="button" data-view="documents">前往文档管理</button>
-        </section>
       </section>
 
       <section id="documents-view" class="page" hidden>

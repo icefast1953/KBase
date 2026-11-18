@@ -3,10 +3,13 @@ const librarySelect = get("library");
 const queryForm = get("query-form");
 const libraryDialog = get("library-dialog");
 const fileInput = get("file-input");
-const dropZone = get("drop-zone");
 const queryStatus = get("query-status");
 const uploadLog = get("upload-log");
+const transcript = get("conversation");
+const questionInput = get("question");
+const knowledgeSwitch = get("enable-knowledge");
 let libraries = [];
+let history = [];
 let requestNumber = 0;
 let uploading = false;
 
@@ -40,7 +43,8 @@ function notice(node, message = "", error = false) {
 function showView(view) {
   get("query-view").hidden = view !== "query";
   get("documents-view").hidden = view !== "documents";
-  get("current-view").textContent = view === "query" ? "检索与问答" : "文档管理";
+  get("current-view").textContent = view === "query" ? "对话" : "文档管理";
+  get("new-chat").hidden = view !== "query";
   document.querySelectorAll(".nav").forEach(button => {
     const active = button.dataset.view === view;
     button.classList.toggle("active", active);
@@ -57,9 +61,7 @@ function showLibrary() {
   const library = currentLibrary();
   get("current-library").textContent = library?.name ?? "知识库";
   get("document-count").textContent = library?.documents ?? 0;
-  get("welcome-text").textContent = library?.documents
-    ? "输入问题或关键词，开始检索当前知识库。"
-    : "导入第一份文档，即可开始检索。";
+  get("side-upload").disabled = !library || uploading;
 }
 
 async function loadLibraries(preferredId) {
@@ -93,7 +95,6 @@ async function loadDocuments() {
       remove.disabled = true;
       try {
         await api(`/libraries/${library.id}/documents/${item.id}`, {method: "DELETE"});
-        resetQuery();
         await refreshDocuments();
       } catch (error) {
         reportDocumentError(error);
@@ -106,6 +107,14 @@ async function loadDocuments() {
     return row;
   });
   get("documents").replaceChildren(...rows);
+  get("side-files").replaceChildren(...data.map(item => {
+    const row = element("li", undefined, "side-file");
+    const suffix = item.filename.split(".").pop().slice(0, 5).toUpperCase();
+    const link = downloadLink(library.id, item.id, item.filename);
+    link.title = item.filename;
+    row.append(element("span", suffix, "file-type"), link);
+    return row;
+  }));
   get("table-count").textContent = `${rows.length} 份`;
   get("table-wrap").hidden = !rows.length;
   get("empty-documents").hidden = Boolean(rows.length);
@@ -121,90 +130,128 @@ function reportDocumentError(error) {
   notice(entry, error.message, true);
   uploadLog.append(entry);
   uploadLog.hidden = false;
+  notice(get("side-notice"), error.message, true);
 }
 
 function queryPending(pending) {
   queryForm.querySelectorAll("button").forEach(button => { button.disabled = pending; });
+  queryForm.setAttribute("aria-busy", String(pending));
 }
 
-function resetQuery() {
+function resetConversation() {
   requestNumber += 1;
+  history = [];
+  transcript.replaceChildren();
+  questionInput.value = "";
   queryPending(false);
   notice(queryStatus);
-  get("results").hidden = true;
   get("welcome").hidden = false;
 }
 
-function showResults(result, library, answerRequested) {
-  const container = get("results");
-  const sources = get("sources");
-  sources.replaceChildren();
-  get("welcome").hidden = true;
-  const showAnswer = answerRequested && Boolean(result.answer);
-  get("answer-panel").hidden = !showAnswer;
-  container.classList.toggle("with-answer", showAnswer);
-  get("sources-title").textContent = `文档出处 · ${result.sources.length}`;
-  result.sources.forEach(source => {
+function showReply(result, library, searchOnly) {
+  const reply = element("article", undefined, "message assistant-message");
+  const heading = searchOnly ? "检索结果" : "KBase";
+  reply.append(element("h2", heading, "message-author"));
+  const cards = new Map();
+  const sources = element("div", undefined, "sources");
+  for (const source of result.sources) {
     const card = element("details", undefined, "source");
-    card.id = `source-${source.reference}`;
-    card.open = source.reference === 1 || !answerRequested;
+    card.open = searchOnly;
     const ranks = [];
     if (source.keyword_rank) ranks.push(`关键词第 ${source.keyword_rank} 名`);
     if (source.semantic_rank) ranks.push(`语义第 ${source.semantic_rank} 名`);
     card.append(element("summary", `[${source.reference}] ${source.filename}`),
       element("p", source.location), element("p", ranks.join(" · ")),
       element("blockquote", source.text), downloadLink(library, source.document_id, "下载原文"));
+    cards.set(String(source.reference), card);
     sources.append(card);
-  });
-  if (!result.sources.length) sources.append(element("p", "当前知识库没有匹配的片段。", "hint"));
-  const answer = get("answer-text");
-  answer.replaceChildren();
-  if (showAnswer) {
-    for (const part of result.answer.split(/(\[\d+\])/g)) {
-      if (!/^\[\d+\]$/.test(part)) {
-        answer.append(document.createTextNode(part));
-        continue;
-      }
-      const target = get(`source-${part.slice(1, -1)}`);
-      if (!target) {
-        answer.append(document.createTextNode(part));
-        continue;
-      }
-      const button = element("button", part, "reference");
-      button.type = "button";
-      button.addEventListener("click", () => {
-        sources.querySelectorAll(".selected").forEach(card => card.classList.remove("selected"));
-        target.open = true;
-        target.classList.add("selected");
-        target.querySelector("summary").focus({preventScroll: true});
-        target.scrollIntoView({block: "nearest"});
-      });
-      answer.append(button);
-    }
   }
-  notice(queryStatus, result.notice ?? "", Boolean(result.notice));
-  container.hidden = false;
+  if (result.answer) {
+    const answer = element("div", undefined, "answer-text");
+    const blocks = result.answer.split(/```[^\n]*\n([\s\S]*?)```/g);
+    for (const [index, block] of blocks.entries()) {
+      if (index % 2) {
+        const pre = element("pre");
+        pre.append(element("code", block.trimEnd()));
+        answer.append(pre);
+        continue;
+      }
+      for (const part of block.split(/(\[\d+\])/g)) {
+        const target = cards.get(part.slice(1, -1));
+        if (!target || !/^\[\d+\]$/.test(part)) {
+          answer.append(document.createTextNode(part));
+          continue;
+        }
+        const button = element("button", part, "reference");
+        button.type = "button";
+        button.addEventListener("click", () => {
+          sources.querySelectorAll(".selected").forEach(card => card.classList.remove("selected"));
+          target.open = true;
+          target.classList.add("selected");
+          target.querySelector("summary").focus({preventScroll: true});
+          target.scrollIntoView({block: "nearest"});
+        });
+        answer.append(button);
+      }
+    }
+    reply.append(answer);
+  }
+  if (result.notice) reply.append(element("p", result.notice, "notice error"));
+  if (cards.size) {
+    const title = element("p", `知识库片段 · ${cards.size}`, "source-title");
+    reply.append(title, sources);
+  } else if (searchOnly || (result.searched && !result.notice)) {
+    reply.append(element("p", "当前知识库没有检索到匹配片段。", "hint"));
+  }
+  transcript.append(reply);
+}
+
+function scrollToLatest() {
+  get("composer-dock").scrollIntoView({block: "end"});
 }
 
 queryForm.addEventListener("submit", async event => {
   event.preventDefault();
+  if (queryForm.getAttribute("aria-busy") === "true") return;
   const library = currentLibrary();
-  const question = get("question").value.trim();
-  if (!library || !question) {
-    notice(queryStatus, library ? "请输入搜索词或问题。" : "请先选择知识库。", true);
+  const question = questionInput.value.trim();
+  const searchOnly = event.submitter?.value === "search";
+  if (!question || (searchOnly && (!library || question.length > 500))) {
+    const message = !question ? "请输入消息。" : !library ? "请先选择知识库。" : "检索词最多 500 字。";
+    notice(queryStatus, message, true);
     return;
   }
   const ticket = ++requestNumber;
-  const answer = event.submitter?.value === "answer";
+  const mode = get("mode").value;
+  const request = searchOnly
+    ? api(`/libraries/${library.id}/query`, jsonRequest({question, mode, answer: false}))
+    : api("/chat", jsonRequest({question, mode, history, library_id: knowledgeSwitch.checked ? library?.id : null}));
+  const userMessage = element("p", question, "message user-message");
+  transcript.append(userMessage);
+  questionInput.value = "";
   queryPending(true);
-  get("results").hidden = true;
   get("welcome").hidden = true;
-  notice(queryStatus, answer ? "正在检索资料并生成回答…" : "正在检索资料…");
+  notice(queryStatus, searchOnly ? "正在检索资料…" : "KBase 正在回答…");
+  scrollToLatest();
   try {
-    const result = await api(`/libraries/${library.id}/query`, jsonRequest({question, mode: get("mode").value, answer}));
-    if (ticket === requestNumber) showResults(result, library.id, answer);
+    const result = await request;
+    if (ticket !== requestNumber) return;
+    if (!searchOnly && result.answer) {
+      history = [...history,
+        {role: "user", content: question.slice(0, 1200)},
+        {role: "assistant", content: result.answer.slice(0, 1200)},
+      ].slice(-8);
+    }
+    showReply(result, library?.id, searchOnly);
+    notice(queryStatus);
+    scrollToLatest();
   } catch (error) {
-    if (ticket === requestNumber) notice(queryStatus, error.message, true);
+    if (ticket === requestNumber) {
+      userMessage.remove();
+      if (!questionInput.value) questionInput.value = question;
+      get("welcome").hidden = transcript.childElementCount > 0;
+      notice(queryStatus, error.message, true);
+    }
   } finally {
     if (ticket === requestNumber) queryPending(false);
   }
@@ -215,9 +262,11 @@ async function importFiles(files) {
   if (!library || !files.length || uploading) return;
   uploading = true;
   get("choose-files").disabled = true;
+  get("side-upload").disabled = true;
+  notice(get("side-notice"), `正在导入 ${files.length} 份文件…`);
   uploadLog.hidden = false;
   uploadLog.replaceChildren();
-  let changed = false;
+  let imported = 0;
   try {
     for (const file of files) {
       const entry = element("li");
@@ -228,20 +277,21 @@ async function importFiles(files) {
         data.append("file", file);
         const document = await api(`/libraries/${library.id}/documents`, {method: "POST", body: data});
         notice(entry, `${file.name} · 已导入 ${document.chunks} 个片段`);
-        changed = true;
+        imported += 1;
       } catch (error) {
         notice(entry, `${file.name} · ${error.message}`, true);
       }
     }
-    if (changed) {
-      resetQuery();
-      await refreshDocuments();
-    }
+    if (imported) await refreshDocuments();
+    const failed = files.length - imported;
+    notice(get("side-notice"), failed ? `已导入 ${imported} 份，失败 ${failed} 份。详情见文档管理。`
+      : `已导入 ${imported} 份文件。`, Boolean(failed));
   } catch (error) {
     reportDocumentError(error);
   } finally {
     uploading = false;
     get("choose-files").disabled = false;
+    get("side-upload").disabled = !currentLibrary();
     fileInput.value = "";
   }
 }
@@ -252,7 +302,7 @@ async function checkModels() {
   const dot = get("model-dot");
   try {
     const models = await api("/models");
-    const ready = models.embedding.ready && models.chat.ready;
+    const ready = models.chat.ready;
     const cloud = models.chat.provider === "deepseek";
     get("cloud-note").hidden = !cloud;
     dot.classList.toggle("ready", ready);
@@ -277,21 +327,44 @@ document.querySelectorAll("[data-view]").forEach(button => {
 });
 librarySelect.addEventListener("change", () => {
   showLibrary();
-  resetQuery();
+  resetConversation();
+  get("side-files").replaceChildren();
+  notice(get("side-notice"));
   loadDocuments().catch(reportDocumentError);
 });
 get("check-models").addEventListener("click", checkModels);
-get("choose-files").addEventListener("click", () => fileInput.click());
-fileInput.addEventListener("change", () => importFiles([...fileInput.files]));
-dropZone.addEventListener("dragover", event => {
-  event.preventDefault();
-  dropZone.classList.add("dragging");
+get("new-chat").addEventListener("click", () => {
+  resetConversation();
+  questionInput.focus();
 });
-dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragging"));
-dropZone.addEventListener("drop", event => {
+knowledgeSwitch.addEventListener("change", () => {
+  get("search-options").hidden = !knowledgeSwitch.checked;
+});
+questionInput.addEventListener("keydown", event => {
+  if (event.key !== "Enter" || event.shiftKey || event.isComposing || event.keyCode === 229) return;
   event.preventDefault();
-  dropZone.classList.remove("dragging");
-  importFiles([...event.dataTransfer.files]);
+  queryForm.requestSubmit(queryForm.querySelector('button[value="answer"]'));
+});
+document.querySelectorAll("[data-prompt]").forEach(button => {
+  button.addEventListener("click", () => {
+    questionInput.value = button.dataset.prompt;
+    questionInput.focus();
+  });
+});
+get("choose-files").addEventListener("click", () => fileInput.click());
+get("side-upload").addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => importFiles([...fileInput.files]));
+document.querySelectorAll(".drop-zone").forEach(zone => {
+  zone.addEventListener("dragover", event => {
+    event.preventDefault();
+    zone.classList.add("dragging");
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("dragging"));
+  zone.addEventListener("drop", event => {
+    event.preventDefault();
+    zone.classList.remove("dragging");
+    importFiles([...event.dataTransfer.files]);
+  });
 });
 
 get("new-library").addEventListener("click", () => {
@@ -309,7 +382,7 @@ get("library-form").addEventListener("submit", async event => {
     const library = await api("/libraries", jsonRequest({name: get("library-name").value}));
     await loadLibraries(library.id);
     libraryDialog.close();
-    resetQuery();
+    resetConversation();
     showView("documents");
     await loadDocuments().catch(reportDocumentError);
   } catch (error) {
@@ -319,5 +392,5 @@ get("library-form").addEventListener("submit", async event => {
   }
 });
 
-loadLibraries().catch(error => notice(queryStatus, error.message, true));
+loadLibraries().then(loadDocuments).catch(reportDocumentError);
 checkModels();
